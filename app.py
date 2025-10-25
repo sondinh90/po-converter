@@ -101,11 +101,11 @@ def parse_avolta_po(full_text, page):
     items_list = []
 
     # 1. Trích xuất thông tin chung
-    # [cite_start]PO No. [cite: 94]
+    # PO No.
     order_num_match = re.search(r"PO No\.\s*([\w-]+)", full_text)
-    # [cite_start]Delivery Date [cite: 90]
+    # Delivery Date
     delivery_date_match = re.search(r"Delivery Date\s*(\d{2}/\d{2}/\d{4})", full_text)
-    # [cite_start]Delivery Address -> Lấy dòng đầu tiên [cite: 91, 92]
+    # Delivery Address -> Lấy dòng đầu tiên
     buyer_name_match = re.search(r"Delivery Address\s*([^\n]+)", full_text)
     
     order_number = order_num_match.group(1).strip() if order_num_match else None
@@ -119,25 +119,25 @@ def parse_avolta_po(full_text, page):
         st.warning(f"  [LỖI] Không tìm thấy bảng sản phẩm trong file Avolta.")
         return []
         
-    [cite_start]item_table = tables[-1] # Bảng sản phẩm là bảng cuối cùng [cite: 95]
+    item_table = tables[-1] # Bảng sản phẩm là bảng cuối cùng
     
     # 3. Đọc dữ liệu bảng
     for row in item_table[1:]: # Bỏ qua dòng tiêu đề
-        # [cite_start]Kiểm tra cột Item No. (row[0]) có dữ liệu không [cite: 95]
+        # Kiểm tra cột Item No. (row[0]) có dữ liệu không
         if row and row[0] and row[0].strip() != "" and "Total" not in row[0]:
             
             # QUAN TRỌNG: Chuẩn hóa số (Avolta: 47.259,00 -> 47259.00)
-            # [cite_start]Quantity [cite: 95]
+            # Quantity
             quantity_str = row[2].replace('.', '').replace(',', '.') if row[2] else '0'
-            # [cite_start]Price [cite: 95]
+            # Price
             price_str = row[4].replace('.', '').replace(',', '.') if row[4] else '0'
 
             standard_item = {
                 "Order_Number": order_number,    
                 "Buyer_Name": buyer_name,      
                 "Delivery_Date": delivery_date,
-                [cite_start]"Item_Code": row[0], # Item No. [cite: 95]
-                [cite_start]"Item_Name": row[1].replace('\n', ' '), # Item [cite: 95]
+                "Item_Code": row[0], # Item No.
+                "Item_Name": row[1].replace('\n', ' '), # Item
                 "Quantity": quantity_str,
                 "Price": price_str
             }
@@ -193,7 +193,7 @@ if uploaded_files:
                         elif "4PS CORPORATION" in full_text or "CÔNG TY TNHH MTV KITCHEN 4PS" in full_text: 
                             customer_name = "4PS"
                             items = parse_4ps_po(full_text, page)
-                        elif "Avolta" in full_text: # <-- DÒNG MỚI ĐỂ NHẬN DIỆN AVOLTA
+                        elif "Avolta" in full_text: 
                             customer_name = "Avolta"
                             items = parse_avolta_po(full_text, page)
                         else:
