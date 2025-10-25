@@ -92,7 +92,7 @@ def parse_4ps_po(full_text, page):
             
     return items_list
 
-# --- HÀM BÓC TÁCH MỚI CHO AVOLTA ---
+# --- HÀM BÓC TÁCH MỚI CHO AVOLTA (ĐÃ SỬA LỖI) ---
 def parse_avolta_po(full_text, page):
     """
     Hàm này được viết RIÊNG để bóc tách PO của Avolta.
@@ -101,25 +101,23 @@ def parse_avolta_po(full_text, page):
     items_list = []
 
     # 1. Trích xuất thông tin chung
-    # PO No.
-    order_num_match = re.search(r"PO No\.\s*([\w-]+)", full_text)
-    # Delivery Date
-    delivery_date_match = re.search(r"Delivery Date\s*(\d{2}/\d{2}/\d{4})", full_text)
-    # Delivery Address -> Lấy dòng đầu tiên
-    buyer_name_match = re.search(r"Delivery Address\s*([^\n]+)", full_text)
+    order_num_match = re.search(r"PO No\.\s*([\w-]+)", full_text) # [cite: 9]
+    delivery_date_match = re.search(r"Delivery Date\s*(\d{2}/\d{2}/\d{4})", full_text) # [cite: 5]
+    buyer_name_match = re.search(r"Delivery Address\s*([^\n]+)", full_text) # [cite: 6]
     
     order_number = order_num_match.group(1).strip() if order_num_match else None
     delivery_date = delivery_date_match.group(1).strip() if delivery_date_match else None
     buyer_name = buyer_name_match.group(1).strip() if buyer_name_match else None
 
-    # 2. Trích xuất bảng
-    tables = page.extract_tables() # Avolta dùng layout đơn giản
+    # 2. Trích xuất bảng (SỬA LỖI 1: Thêm chiến lược "text")
+    tables = page.extract_tables({"vertical_strategy": "text", "horizontal_strategy": "text"}) 
     
-    if not tables or len(tables) < 3:
+    # 2. Trích xuất bảng (SỬA LỖI 2: Nới lỏng điều kiện)
+    if not tables:
         st.warning(f"  [LỖI] Không tìm thấy bảng sản phẩm trong file Avolta.")
         return []
         
-    item_table = tables[-1] # Bảng sản phẩm là bảng cuối cùng
+    item_table = tables[-1] # Bảng sản phẩm là bảng cuối cùng 
     
     # 3. Đọc dữ liệu bảng
     for row in item_table[1:]: # Bỏ qua dòng tiêu đề
@@ -127,9 +125,14 @@ def parse_avolta_po(full_text, page):
         if row and row[0] and row[0].strip() != "" and "Total" not in row[0]:
             
             # QUAN TRỌNG: Chuẩn hóa số (Avolta: 47.259,00 -> 47259.00)
-            # Quantity
+            # Dựa trên file PDF:
+            # row[0] = Item No.
+            # row[1] = Item
+            # row[2] = Qty (1,00)
+            # row[3] = Unit (kg)
+            # row[4] = Price (47.259,00)
+            
             quantity_str = row[2].replace('.', '').replace(',', '.') if row[2] else '0'
-            # Price
             price_str = row[4].replace('.', '').replace(',', '.') if row[4] else '0'
 
             standard_item = {
@@ -193,7 +196,7 @@ if uploaded_files:
                         elif "4PS CORPORATION" in full_text or "CÔNG TY TNHH MTV KITCHEN 4PS" in full_text: 
                             customer_name = "4PS"
                             items = parse_4ps_po(full_text, page)
-                        elif "Item No. Vendor No. Item" in full_text: # <-- SỬA LỖI: Dùng chìa khóa này
+                        elif "Item No. Vendor No. Item" in full_text: # 
                             customer_name = "Avolta"
                             items = parse_avolta_po(full_text, page)
                         else:
