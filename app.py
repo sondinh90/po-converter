@@ -101,31 +101,43 @@ def parse_avolta_po(full_text, page):
     items_list = []
 
     # 1. Trích xuất thông tin chung
-    order_num_match = re.search(r"PO No\.\s*([\w-]+)", full_text) # [cite: 9]
-    delivery_date_match = re.search(r"Delivery Date\s*(\d{2}/\d{2}/\d{4})", full_text) # [cite: 5]
-    buyer_name_match = re.search(r"Delivery Address\s*([^\n]+)", full_text) # [cite: 6]
+    order_num_match = re.search(r"PO No\.\s*([\w-]+)", full_text) 
+    delivery_date_match = re.search(r"Delivery Date\s*(\d{2}/\d{2}/\d{4})", full_text) 
+    buyer_name_match = re.search(r"Delivery Address\s*([^\n]+)", full_text) 
     
     order_number = order_num_match.group(1).strip() if order_num_match else None
     delivery_date = delivery_date_match.group(1).strip() if delivery_date_match else None
     buyer_name = buyer_name_match.group(1).strip() if buyer_name_match else None
 
-    # 2. Trích xuất bảng (SỬA LỖI 1: Thêm chiến lược "text")
-    tables = page.extract_tables({"vertical_strategy": "text", "horizontal_strategy": "text"}) 
+    # 2. Trích xuất bảng (LOGIC MỚI ĐÃ SỬA)
+    tables = page.extract_tables({"vertical_strategy": "text", "horizontal_strategy": "text"})
     
-    # 2. Trích xuất bảng (SỬA LỖI 2: Nới lỏng điều kiện)
+    item_table = None
     if not tables:
-        st.warning(f"  [LỖI] Không tìm thấy bảng sản phẩm trong file Avolta.")
+        st.warning(f"  [LỖI] Không tìm thấy bất kỳ bảng nào trong file Avolta.")
         return []
-        
-    item_table = tables[-1] # Bảng sản phẩm là bảng cuối cùng 
+
+    # --- SỬA LỖI: Tìm đúng bảng sản phẩm ---
+    for table in tables:
+        if table and len(table) > 0:
+            # Chuyển đổi row đầu tiên (header) thành một chuỗi
+            header_row_text = " ".join(filter(None, table[0]))
+            # Nếu tìm thấy header, đây chính là bảng sản phẩm
+            if "Item No. Vendor No. Item" in header_row_text:
+                item_table = table
+                break
     
+    if item_table is None:
+        st.warning(f"  [LỖI] Đã tìm thấy bảng, nhưng không phải bảng sản phẩm (Avolta).")
+        return []
+    # --- KẾT THÚC SỬA LỖI ---
+        
     # 3. Đọc dữ liệu bảng
     for row in item_table[1:]: # Bỏ qua dòng tiêu đề
         # Kiểm tra cột Item No. (row[0]) có dữ liệu không
         if row and row[0] and row[0].strip() != "" and "Total" not in row[0]:
             
             # QUAN TRỌNG: Chuẩn hóa số (Avolta: 47.259,00 -> 47259.00)
-            # Dựa trên file PDF:
             # row[0] = Item No.
             # row[1] = Item
             # row[2] = Qty (1,00)
@@ -196,7 +208,7 @@ if uploaded_files:
                         elif "4PS CORPORATION" in full_text or "CÔNG TY TNHH MTV KITCHEN 4PS" in full_text: 
                             customer_name = "4PS"
                             items = parse_4ps_po(full_text, page)
-                        elif "Item No. Vendor No. Item" in full_text: # 
+                        elif "Item No. Vendor No. Item" in full_text: 
                             customer_name = "Avolta"
                             items = parse_avolta_po(full_text, page)
                         else:
