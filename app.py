@@ -5,8 +5,7 @@ import re
 import os
 import io # Dùng để xử lý file trong bộ nhớ
 
-# --- COPY Y HỆT 2 HÀM PARSER CŨ ---
-
+# --- HÀM BÓC TÁCH CHO MEGA ---
 def parse_mega_po(full_text, page):
     """
     Hàm này được viết RIÊNG để bóc tách PO của Mega.
@@ -31,19 +30,24 @@ def parse_mega_po(full_text, page):
     
     for row in item_table[1:]:
         if row and row[0] and row[0].strip() != "":
+            # Chuẩn hóa số (Mega: 68,000.000 -> 68000.000)
+            quantity_str = row[4].replace(',', '') if row[4] else '0'
+            price_str = row[5].replace(',', '') if row[5] else '0'
+
             standard_item = {
                 "Order_Number": order_number,    
                 "Buyer_Name": buyer_name,      
                 "Delivery_Date": delivery_date,
                 "Item_Code": row[1],
                 "Item_Name": row[0].replace('\n', ' '),
-                "Quantity": row[4],
-                "Price": row[5]
+                "Quantity": quantity_str, # Sẽ được convert ở hàm main
+                "Price": price_str       # Sẽ được convert ở hàm main
             }
             items_list.append(standard_item)
     
     return items_list
 
+# --- HÀM BÓC TÁCH CHO 4PS ---
 def parse_4ps_po(full_text, page):
     """
     Hàm này được viết RIÊNG để bóc tách PO của 4PS (cả 2 loại).
@@ -71,14 +75,71 @@ def parse_4ps_po(full_text, page):
     
     for row in item_table[1:]:
         if row and row[1] and row[1].strip() != "" and "Total" not in row:
+            # Chuẩn hóa số (4PS: 180,000.00 -> 180000.00)
+            quantity_str = row[4].replace(',', '') if row[4] else '0'
+            price_str = row[5].replace(',', '') if row[5] else '0'
+
             standard_item = {
                 "Order_Number": order_number,    
                 "Buyer_Name": buyer_name,      
                 "Delivery_Date": delivery_date,
                 "Item_Code": row[1],
                 "Item_Name": row[2].replace('\n', ' '),
-                "Quantity": row[4],
-                "Price": row[5]
+                "Quantity": quantity_str,
+                "Price": price_str
+            }
+            items_list.append(standard_item)
+            
+    return items_list
+
+# --- HÀM BÓC TÁCH MỚI CHO AVOLTA ---
+def parse_avolta_po(full_text, page):
+    """
+    Hàm này được viết RIÊNG để bóc tách PO của Avolta.
+    """
+    st.write("  > Nhận diện: Mẫu PO của Avolta. Đang xử lý...")
+    items_list = []
+
+    # 1. Trích xuất thông tin chung
+    # [cite_start]PO No. [cite: 94]
+    order_num_match = re.search(r"PO No\.\s*([\w-]+)", full_text)
+    # [cite_start]Delivery Date [cite: 90]
+    delivery_date_match = re.search(r"Delivery Date\s*(\d{2}/\d{2}/\d{4})", full_text)
+    # [cite_start]Delivery Address -> Lấy dòng đầu tiên [cite: 91, 92]
+    buyer_name_match = re.search(r"Delivery Address\s*([^\n]+)", full_text)
+    
+    order_number = order_num_match.group(1).strip() if order_num_match else None
+    delivery_date = delivery_date_match.group(1).strip() if delivery_date_match else None
+    buyer_name = buyer_name_match.group(1).strip() if buyer_name_match else None
+
+    # 2. Trích xuất bảng
+    tables = page.extract_tables() # Avolta dùng layout đơn giản
+    
+    if not tables or len(tables) < 3:
+        st.warning(f"  [LỖI] Không tìm thấy bảng sản phẩm trong file Avolta.")
+        return []
+        
+    [cite_start]item_table = tables[-1] # Bảng sản phẩm là bảng cuối cùng [cite: 95]
+    
+    # 3. Đọc dữ liệu bảng
+    for row in item_table[1:]: # Bỏ qua dòng tiêu đề
+        # [cite_start]Kiểm tra cột Item No. (row[0]) có dữ liệu không [cite: 95]
+        if row and row[0] and row[0].strip() != "" and "Total" not in row[0]:
+            
+            # QUAN TRỌNG: Chuẩn hóa số (Avolta: 47.259,00 -> 47259.00)
+            # [cite_start]Quantity [cite: 95]
+            quantity_str = row[2].replace('.', '').replace(',', '.') if row[2] else '0'
+            # [cite_start]Price [cite: 95]
+            price_str = row[4].replace('.', '').replace(',', '.') if row[4] else '0'
+
+            standard_item = {
+                "Order_Number": order_number,    
+                "Buyer_Name": buyer_name,      
+                "Delivery_Date": delivery_date,
+                [cite_start]"Item_Code": row[0], # Item No. [cite: 95]
+                [cite_start]"Item_Name": row[1].replace('\n', ' '), # Item [cite: 95]
+                "Quantity": quantity_str,
+                "Price": price_str
             }
             items_list.append(standard_item)
             
@@ -95,7 +156,7 @@ def to_excel(df):
 # --- GIAO DIỆN WEB STREAMLIT ---
 st.set_page_config(page_title="Công cụ tổng hợp PO", layout="wide")
 st.title("🚀 Công cụ trích xuất dữ liệu PO sang Excel")
-st.write("Tải lên các file PDF của Mega và 4PS để tổng hợp tự động.")
+st.write("Tải lên các file PDF của Mega, 4PS, và Avolta để tổng hợp tự động.")
 
 # 1. Khu vực tải file
 uploaded_files = st.file_uploader(
@@ -129,9 +190,12 @@ if uploaded_files:
                         if "WH 79-DALAT BBXD PLATFORM" in full_text:
                             customer_name = "Mega Market"
                             items = parse_mega_po(full_text, page)
-                        elif "4PS CORPORATION" in full_text or "CÔNG TY TNHH MTV KITCHEN 4PS" in full_text: # <-- DÒNG ĐÃ SỬA
+                        elif "4PS CORPORATION" in full_text or "CÔNG TY TNHH MTV KITCHEN 4PS" in full_text: 
                             customer_name = "4PS"
                             items = parse_4ps_po(full_text, page)
+                        elif "Avolta" in full_text: # <-- DÒNG MỚI ĐỂ NHẬN DIỆN AVOLTA
+                            customer_name = "Avolta"
+                            items = parse_avolta_po(full_text, page)
                         else:
                             st.error(f"  [LỖI] Không nhận diện được mẫu PO cho file: {file_name}.")
                             continue
@@ -154,9 +218,10 @@ if uploaded_files:
         else:
             df = pd.DataFrame(all_standardized_data)
             
+            # Chuyển đổi tất cả các số đã được chuẩn hóa sang dạng số
             try:
-                df['Quantity'] = pd.to_numeric(df['Quantity'].str.replace(r'[,]', '', regex=True), errors='coerce').fillna(0)
-                df['Price'] = pd.to_numeric(df['Price'].str.replace(r'[,]', '', regex=True), errors='coerce').fillna(0)
+                df['Quantity'] = pd.to_numeric(df['Quantity'], errors='coerce').fillna(0)
+                df['Price'] = pd.to_numeric(df['Price'], errors='coerce').fillna(0)
             except Exception as e:
                 st.warning(f"[CẢNH BÁO] Không thể dọn dẹp dữ liệu số: {e}")
 
