@@ -1,0 +1,182 @@
+import streamlit as st
+import pandas as pd
+import pdfplumber
+import re
+import os
+import io # Dùng để xử lý file trong bộ nhớ
+
+# --- COPY Y HỆT 2 HÀM PARSER CŨ ---
+
+def parse_mega_po(full_text, page):
+    """
+    Hàm này được viết RIÊNG để bóc tách PO của Mega.
+    """
+    st.write("  > Nhận diện: Mẫu PO của Mega Market. Đang xử lý...")
+    items_list = []
+    
+    order_num_match = re.search(r"OUR ORDER NUMBER\s*:\s*([\d/.]+)", full_text)
+    delivery_date_match = re.search(r"PLANNED DELIVERY DATE\s*:\s*([\d-]+)", full_text)
+    buyer_name_match = re.search(r"BUYER\s*:\s*([^\n]+)", full_text) 
+    
+    order_number = order_num_match.group(1).strip() if order_num_match else None
+    delivery_date = delivery_date_match.group(1).strip() if delivery_date_match else None
+    buyer_name = buyer_name_match.group(1).strip() if buyer_name_match else None 
+
+    tables = page.extract_tables({"vertical_strategy": "text", "horizontal_strategy": "text"})
+    if not tables:
+        st.warning(f"  [LỖI] Không tìm thấy bảng trong file Mega.")
+        return []
+
+    item_table = tables[0]
+    
+    for row in item_table[1:]:
+        if row and row[0] and row[0].strip() != "":
+            standard_item = {
+                "Order_Number": order_number,    
+                "Buyer_Name": buyer_name,      
+                "Delivery_Date": delivery_date,
+                "Item_Code": row[1],
+                "Item_Name": row[0].replace('\n', ' '),
+                "Quantity": row[4],
+                "Price": row[5]
+            }
+            items_list.append(standard_item)
+    
+    return items_list
+
+def parse_4ps_po(full_text, page):
+    """
+    Hàm này được viết RIÊNG để bóc tách PO của 4PS.
+    """
+    st.write("  > Nhận diện: Mẫu PO của 4PS Corporation. Đang xử lý...")
+    items_list = []
+
+    order_num_match = re.search(r"Order Number\s*:\s*(\d+)", full_text)
+    delivery_date_match = re.search(r"Request Del\. Time\s*:\s*(\d{2}/\d{2}/\d{4})", full_text)
+    buyer_name_match = re.search(r"Buyer Name\s*:\s*([^\n]+)", full_text)
+    
+    order_number = order_num_match.group(1).strip() if order_num_match else None
+    delivery_date = delivery_date_match.group(1).strip() if delivery_date_match else None
+    buyer_name = buyer_name_match.group(1).strip() if buyer_name_match else None
+
+    tables = page.extract_tables({"vertical_strategy": "lines", "horizontal_strategy": "lines"})
+    if not tables:
+        tables = page.extract_tables() 
+    
+    if not tables:
+        st.warning(f"  [LỖI] Không tìm thấy bảng trong file 4PS.")
+        return []
+        
+    item_table = tables[-1] 
+    
+    for row in item_table[1:]:
+        if row and row[1] and row[1].strip() != "" and "Total" not in row:
+            standard_item = {
+                "Order_Number": order_number,    
+                "Buyer_Name": buyer_name,      
+                "Delivery_Date": delivery_date,
+                "Item_Code": row[1],
+                "Item_Name": row[2].replace('\n', ' '),
+                "Quantity": row[4],
+                "Price": row[5]
+            }
+            items_list.append(standard_item)
+            
+    return items_list
+
+# --- HÀM HELPER ĐỂ CHUYỂN DF SANG EXCEL TRONG BỘ NHỚ ---
+def to_excel(df):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='TongHopPO')
+    processed_data = output.getvalue()
+    return processed_data
+
+# --- GIAO DIỆN WEB STREAMLIT ---
+st.set_page_config(page_title="Công cụ tổng hợp PO", layout="wide")
+st.title("🚀 Công cụ trích xuất dữ liệu PO sang Excel")
+st.write("Tải lên các file PDF của Mega và 4PS để tổng hợp tự động.")
+
+# 1. Khu vực tải file
+uploaded_files = st.file_uploader(
+    "Kéo và thả file PDF của bạn vào đây:",
+    type="pdf",
+    accept_multiple_files=True
+)
+
+if uploaded_files:
+    st.success(f"Đã nhận {len(uploaded_files)} file. Nhấn 'Xử lý' để bắt đầu.")
+    
+    # 2. Nút bấm xử lý
+    if st.button("Xử lý tất cả file"):
+        all_standardized_data = []
+        progress_bar = st.progress(0)
+        
+        with st.expander("Xem chi tiết quá trình xử lý:"):
+            for i, uploaded_file in enumerate(uploaded_files):
+                file_name = uploaded_file.name
+                st.write(f"--- Đang mở file: {file_name} ---")
+                
+                try:
+                    with pdfplumber.open(uploaded_file) as pdf:
+                        page = pdf.pages[0]
+                        full_text = page.extract_text()
+                        
+                        customer_name = "Unknown"
+                        items = []
+
+                        if "WH 79-DALAT BBXD PLATFORM" in full_text:
+                            customer_name = "Mega Market"
+                            items = parse_mega_po(full_text, page)
+                        elif "4PS CORPORATION" in full_text:
+                            customer_name = "4PS"
+                            items = parse_4ps_po(full_text, page)
+                        else:
+                            st.error(f"  [LỖI] Không nhận diện được mẫu PO cho file: {file_name}.")
+                            continue
+                        
+                        for item in items:
+                            item['Customer'] = customer_name 
+                            item['File_Name'] = file_name 
+                            all_standardized_data.append(item)
+                        
+                        st.write(f"  > Hoàn tất file. Trích xuất được {len(items)} dòng sản phẩm.")
+                
+                except Exception as e:
+                    st.error(f"!!! LỖI NGHIÊM TRỌNG khi xử lý file {file_name}: {e}")
+                
+                progress_bar.progress((i + 1) / len(uploaded_files))
+
+        # 3. Xử lý dữ liệu sau khi lặp
+        if not all_standardized_data:
+            st.error("Hoàn tất, nhưng không có dữ liệu nào được trích xuất.")
+        else:
+            df = pd.DataFrame(all_standardized_data)
+            
+            try:
+                df['Quantity'] = pd.to_numeric(df['Quantity'].str.replace(r'[,]', '', regex=True), errors='coerce').fillna(0)
+                df['Price'] = pd.to_numeric(df['Price'].str.replace(r'[,]', '', regex=True), errors='coerce').fillna(0)
+            except Exception as e:
+                st.warning(f"[CẢNH BÁO] Không thể dọn dẹp dữ liệu số: {e}")
+
+            columns_order = [
+                'Customer', 'Order_Number', 'Buyer_Name', 'Delivery_Date', 
+                'Item_Code', 'Item_Name', 'Quantity', 'Price', 
+                'File_Name'
+            ]
+            final_columns = [col for col in columns_order if col in df.columns]
+            df = df[final_columns]
+            
+            st.success(f"🎉 XỬ LÝ HOÀN TẤT! 🎉")
+            st.write(f"Đã lưu tổng cộng {len(df)} dòng dữ liệu từ {df['File_Name'].nunique()} file.")
+            
+            # 4. Nút tải file
+            excel_data = to_excel(df)
+            st.download_button(
+                label="📥 Tải file Excel tổng hợp",
+                data=excel_data,
+                file_name="TongHop_TAT_CA_DonHang.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+            
+            st.dataframe(df) # Hiển thị bảng kết quả
