@@ -193,7 +193,7 @@ if uploaded_files:
                         elif "4PS CORPORATION" in full_text or "CÔNG TY TNHH MTV KITCHEN 4PS" in full_text: 
                             customer_name = "4PS"
                             items = parse_4ps_po(full_text, page)
-                        elif "Avolta" in full_text: 
+                        elif "Item No. Vendor No. Item" in full_text: # <-- SỬA LỖI: Dùng chìa khóa này
                             customer_name = "Avolta"
                             items = parse_avolta_po(full_text, page)
                         else:
