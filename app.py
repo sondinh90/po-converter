@@ -46,9 +46,9 @@ def parse_mega_po(full_text, page):
 
 def parse_4ps_po(full_text, page):
     """
-    Hàm này được viết RIÊNG để bóc tách PO của 4PS.
+    Hàm này được viết RIÊNG để bóc tách PO của 4PS (cả 2 loại).
     """
-    st.write("  > Nhận diện: Mẫu PO của 4PS Corporation. Đang xử lý...")
+    st.write("  > Nhận diện: Mẫu PO của 4PS. Đang xử lý...")
     items_list = []
 
     order_num_match = re.search(r"Order Number\s*:\s*(\d+)", full_text)
@@ -124,11 +124,12 @@ if uploaded_files:
                         
                         customer_name = "Unknown"
                         items = []
-
+                        
+                        # --- LOGIC NHẬN DIỆN TỰ ĐỘNG (ĐÃ CẬP NHẬT) ---
                         if "WH 79-DALAT BBXD PLATFORM" in full_text:
                             customer_name = "Mega Market"
                             items = parse_mega_po(full_text, page)
-                        elif "4PS CORPORATION" in full_text:
+                        elif "4PS CORPORATION" in full_text or "CÔNG TY TNHH MTV KITCHEN 4PS" in full_text: # <-- DÒNG ĐÃ SỬA
                             customer_name = "4PS"
                             items = parse_4ps_po(full_text, page)
                         else:
