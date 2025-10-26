@@ -55,7 +55,7 @@ def create_hybrid_excel(standard_df, unrecognized_files_list):
     """
     Tạo file Excel trong bộ nhớ:
     - Sheet 1: Dữ liệu đã chuẩn hóa (standard_df)
-    - Các sheet khác: Dữ liệu thô (TRÍCH XUẤT BẢNG) từ các file không nhận diện
+    - Các sheet khác: Dữ liệu thô (TRÍCH XUẤT VĂN BẢN GIỮ LAYOUT) từ các file không nhận diện
     """
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -67,9 +67,9 @@ def create_hybrid_excel(standard_df, unrecognized_files_list):
             # Tạo sheet rỗng nếu không có dữ liệu 4PS
             pd.DataFrame(["Không có dữ liệu PO 4PS nào được tìm thấy."]).to_excel(writer, sheet_name="TongHop_4PS", index=False, header=False)
         
-        # --- VIẾT CÁC SHEET THÔ (RAW TABLE DUMP) ---
+        # --- VIẾT CÁC SHEET THÔ (RAW LAYOUT TEXT DUMP) ---
         if unrecognized_files_list:
-            st.write("--- Đang xử lý các file PDF khác (trích xuất bảng thô) ---")
+            st.write("--- Đang xử lý các file PDF khác (trích xuất text giữ layout) ---")
             for uploaded_file in unrecognized_files_list:
                 
                 # Tạo tên sheet an toàn
@@ -80,32 +80,28 @@ def create_hybrid_excel(standard_df, unrecognized_files_list):
                     # Đặt lại con trỏ file về đầu
                     uploaded_file.seek(0)
                     with pdfplumber.open(uploaded_file) as pdf:
-                        all_rows_for_sheet = []
-                        max_cols = 0
+                        all_lines_for_sheet = []
                         
                         # Lặp qua từng trang trong PDF
                         for page in pdf.pages:
-                            # Dùng chiến lược "text" để cố gắng đọc các bảng không có đường kẻ
-                            tables = page.extract_tables({"vertical_strategy": "text", "horizontal_strategy": "text"})
-                            if not tables:
-                                tables = page.extract_tables() # Thử cả cách mặc định
-
-                            if tables:
-                                for table in tables:
-                                    all_rows_for_sheet.extend(table) # Thêm dữ liệu bảng
-                                    # Tìm số cột tối đa để đệm
-                                    if table: # Đảm bảo bảng không rỗng
-                                        max_cols = max(max_cols, max(len(r) for r in table if r))
+                            # --- ĐÂY LÀ THAY ĐỔI QUAN TRỌNG ---
+                            # Trích xuất text, giữ lại các dấu cách và xuống dòng
+                            page_text = page.extract_text(layout=True, keep_blank_chars=True)
                             
-                            if max_cols > 0:
-                                all_rows_for_sheet.append([None] * max_cols) # Thêm 1 dòng trống
+                            if page_text:
+                                # Tách text thành các dòng
+                                lines = page_text.split('\n')
+                                all_lines_for_sheet.extend(lines)
+                            
+                            all_lines_for_sheet.append("--- HẾT TRANG ---") # Thêm 1 dòng ngăn cách
                     
-                    if all_rows_for_sheet:
-                        df_raw = pd.DataFrame(all_rows_for_sheet)
+                    if all_lines_for_sheet:
+                        # Đưa mỗi dòng text vào 1 dòng Excel
+                        df_raw = pd.DataFrame(all_lines_for_sheet)
                         df_raw.to_excel(writer, sheet_name=safe_sheet_name, index=False, header=False)
-                        st.write(f"  > Đã dump bảng từ '{uploaded_file.name}' sang sheet '{safe_sheet_name}'")
+                        st.write(f"  > Đã dump text (giữ layout) từ '{uploaded_file.name}' sang sheet '{safe_sheet_name}'")
                     else:
-                        pd.DataFrame([f"Không tìm thấy bảng nào trong file {uploaded_file.name}"]).to_excel(writer, sheet_name=safe_sheet_name, index=False, header=False)
+                        pd.DataFrame([f"Không tìm thấy text nào trong file {uploaded_file.name}"]).to_excel(writer, sheet_name=safe_sheet_name, index=False, header=False)
 
                 except Exception as e:
                     st.error(f"Lỗi khi dump file {uploaded_file.name}: {e}")
@@ -118,7 +114,7 @@ def create_hybrid_excel(standard_df, unrecognized_files_list):
 st.set_page_config(page_title="Công cụ tổng hợp PO", layout="wide")
 st.title("🚀 Công cụ trích xuất dữ liệu PO sang Excel")
 st.write("Tải lên các file PDF của 4PS và các file PDF khác.")
-st.write("Các file 4PS sẽ được gộp vào sheet 'TongHop_4PS'. Các file PDF khác sẽ được trích xuất *toàn bộ bảng* vào các sheet riêng.")
+st.write("Các file 4PS sẽ được gộp vào sheet 'TongHop_4PS'. Các file PDF khác sẽ được trích xuất *toàn bộ văn bản (giữ layout)* vào các sheet riêng.")
 
 # 1. Khu vực tải file
 uploaded_files = st.file_uploader(
@@ -171,7 +167,7 @@ if uploaded_files:
                             st.write(f"  > Hoàn tất file 4PS. Trích xuất được {len(items)} dòng sản phẩm.")
                         else:
                             # --- NẾU KHÔNG NHẬN DIỆN, THÊM VÀO DANH SÁCH CHỜ DUMP ---
-                            st.info(f"  > Không phải file 4PS. Sẽ dump bảng thô file này sang sheet riêng.")
+                            st.info(f"  > Không phải file 4PS. Sẽ dump text (giữ layout) file này sang sheet riêng.")
                             unrecognized_files.append(uploaded_file)
                 
                 except Exception as e:
@@ -208,15 +204,15 @@ if uploaded_files:
                 st.info("Không tìm thấy PO 4PS nào để gộp.")
 
             if unrecognized_files:
-                st.info(f"Sẵn sàng dump bảng từ {len(unrecognized_files)} file PDF khác sang các sheet riêng.")
+                st.info(f"Sẵn sàng dump text (giữ layout) từ {len(unrecognized_files)} file PDF khác sang các sheet riêng.")
             
             # 4. Nút tải file
             # Gọi hàm tạo excel "hybrid" mới
             excel_data = create_hybrid_excel(df_standard, unrecognized_files)
             
             st.download_button(
-                label="📥 Tải file Excel tổng hợp (Gộp 4PS + Bảng thô)",
+                label="📥 Tải file Excel tổng hợp (Gộp 4PS + Text Layout)",
                 data=excel_data,
-                file_name="TongHop_PO_va_BangTho.xlsx",
+                file_name="TongHop_PO_va_FileTho.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
