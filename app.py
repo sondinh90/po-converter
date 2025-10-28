@@ -5,35 +5,59 @@ import re
 import os
 import io # Dùng để xử lý file trong bộ nhớ
 
-# --- HÀM BÓC TÁCH CHO 4PS (DUY NHẤT) ---
-def parse_4ps_po(full_text, page):
+# --- HÀM BÓC TÁCH CHO 4PS (ĐÃ VIẾT LẠI ĐỂ HỖ TRỢ NHIỀU TRANG) ---
+def parse_4ps_po(pdf): # <-- THAY ĐỔI 1: Lấy cả file PDF
     """
-    Hàm này được viết RIÊNG để bóc tách PO của 4PS (cả 2 loại).
+    Hàm này được viết RIÊNG để bóc tách PO của 4PS (hỗ trợ nhiều trang).
     """
-    st.write("  > Nhận diện: Mẫu PO của 4PS. Đang xử lý...")
+    st.write("  > Nhận diện: Mẫu PO của 4PS. Đang xử lý (hỗ trợ nhiều trang)...")
     items_list = []
 
-    order_num_match = re.search(r"Order Number\s*:\s*(\d+)", full_text)
-    delivery_date_match = re.search(r"Request Del\. Time\s*:\s*(\d{2}/\d{2}/\d{4})", full_text)
-    buyer_name_match = re.search(r"Buyer Name\s*:\s*([^\n]+)", full_text)
+    # --- BƯỚC 1: Lấy thông tin chung từ TRANG 1 ---
+    # Thông tin này chỉ có ở trang 1
+    page1 = pdf.pages[0]
+    full_text_page1 = page1.extract_text() 
+
+    order_num_match = re.search(r"Order Number\s*:\s*(\d+)", full_text_page1)
+    delivery_date_match = re.search(r"Request Del\. Time\s*:\s*(\d{2}/\d{2}/\d{4})", full_text_page1)
+    buyer_name_match = re.search(r"Buyer Name\s*:\s*([^\n]+)", full_text_page1)
     
     order_number = order_num_match.group(1).strip() if order_num_match else None
     delivery_date = delivery_date_match.group(1).strip() if delivery_date_match else None
     buyer_name = buyer_name_match.group(1).strip() if buyer_name_match else None
 
-    tables = page.extract_tables({"vertical_strategy": "lines", "horizontal_strategy": "lines"})
-    if not tables:
-        tables = page.extract_tables() 
+    # --- BƯỚC 2: Lặp qua TẤT CẢ các trang để lấy BẢNG SẢN PHẨM ---
+    st.write(f"  > File này có {len(pdf.pages)} trang. Đang quét tất cả...")
     
-    if not tables:
-        st.warning(f"  [LỖI] Không tìm thấy bảng trong file 4PS.")
-        return []
+    for i, page in enumerate(pdf.pages):
+        st.write(f"    > Đang xử lý trang {i+1}...")
+        tables = page.extract_tables({"vertical_strategy": "lines", "horizontal_strategy": "lines"})
+        if not tables:
+            tables = page.extract_tables() 
         
-    item_table = tables[-1] 
-    
-    for row in item_table[1:]:
-        if row and row[1] and row[1].strip() != "" and "Total" not in row:
-            # Chuẩn hóa số (4PS: 180,000.00 -> 180000.00)
+        if not tables:
+            st.write(f"    > Không tìm thấy bảng nào trên trang {i+1}.")
+            continue # Không có bảng nào trên trang này
+            
+        item_table = tables[-1] # Giả định bảng sản phẩm là bảng cuối
+        
+        # Lặp qua tất cả các dòng trong bảng
+        for row in item_table:
+            # Đảm bảo dòng có đủ 8 cột (No, Code, Name, Unit, Qty, Price, Tax, Total)
+            if not row or len(row) < 8:
+                continue 
+            
+            product_code = row[1] # Cột "Product Code"
+
+            # Bỏ qua các dòng rác/header/total
+            if product_code == "Product Code": # Bỏ qua header
+                continue
+            if "Total" in (row[0] or ""): # Bỏ qua dòng Total
+                continue
+            if not product_code or product_code.strip() == "": # Bỏ qua dòng trống
+                continue
+                
+            # Nếu qua được, đây là dòng dữ liệu
             quantity_str = row[4].replace(',', '') if row[4] else '0'
             price_str = row[5].replace(',', '') if row[5] else '0'
 
@@ -41,16 +65,16 @@ def parse_4ps_po(full_text, page):
                 "Order_Number": order_number,    
                 "Buyer_Name": buyer_name,      
                 "Delivery_Date": delivery_date,
-                "Item_Code": row[1],
+                "Item_Code": product_code,
                 "Item_Name": row[2].replace('\n', ' '),
                 "Quantity": quantity_str,
                 "Price": price_str
             }
             items_list.append(standard_item)
-            
+    
     return items_list
 
-# --- HÀM TẠO EXCEL (ĐÃ CẬP NHẬT LOGIC DUMP) ---
+# --- HÀM TẠO EXCEL (Giữ nguyên logic "dump thô") ---
 def create_hybrid_excel(standard_df, unrecognized_files_list):
     """
     Tạo file Excel trong bộ nhớ:
@@ -110,11 +134,11 @@ def create_hybrid_excel(standard_df, unrecognized_files_list):
 
     return output.getvalue()
 
-# --- GIAO DIỆN WEB STREAMLIT (Đã cập nhật tiêu đề) ---
+# --- GIAO DIỆN WEB STREAMLIT ---
 st.set_page_config(page_title="Công cụ tổng hợp PO", layout="wide")
 st.title("🚀 Công cụ trích xuất dữ liệu PO sang Excel")
 st.write("Tải lên các file PDF của 4PS và các file PDF khác.")
-st.write("Các file 4PS sẽ được gộp vào sheet 'TongHop_4PS'. Các file PDF khác sẽ được trích xuất *toàn bộ văn bản (giữ layout)* vào các sheet riêng.")
+st.write("Các file 4PS (kể cả nhiều trang) sẽ được gộp vào sheet 'TongHop_4PS'. Các file PDF khác sẽ được trích xuất *toàn bộ văn bản (giữ layout)* vào các sheet riêng.")
 
 # 1. Khu vực tải file
 uploaded_files = st.file_uploader(
@@ -141,23 +165,31 @@ if uploaded_files:
                 try:
                     # Đặt lại con trỏ file về đầu
                     uploaded_file.seek(0)
-                    with pdfplumber.open(uploaded_file) as pdf:
+                    with pdfplumber.open(uploaded_file) as pdf: # 'pdf' là toàn bộ file
                         if not pdf.pages:
                             st.error(f"File {file_name} bị lỗi hoặc không có trang nào.")
                             continue
                         
-                        page = pdf.pages[0]
-                        full_text = page.extract_text()
+                        # --- THAY ĐỔI LOGIC GỌI HÀM ---
+                        
+                        # 1. Vẫn lấy text trang 1 để NHẬN DIỆN
+                        page1_text = pdf.pages[0].extract_text()
+                        if page1_text is None: # Xử lý file ảnh/lỗi
+                             page1_text = ""
+                             st.warning(f"  > Không thể đọc text từ trang 1 của file {file_name}.")
                         
                         items = []
                         is_recognized = False
                         
-                        # --- LOGIC NHẬN DIỆN TỰ ĐỘNG (Đã rút gọn) ---
-                        if "4PS CORPORATION" in full_text or "CÔNG TY TNHH MTV KITCHEN 4PS" in full_text: 
+                        # 2. Logic nhận diện vẫn dùng page1_text
+                        if "4PS CORPORATION" in page1_text or "CÔNG TY TNHH MTV KITCHEN 4PS" in page1_text: 
                             customer_name = "4PS"
-                            items = parse_4ps_po(full_text, page)
+                            # 3. GỌI HÀM PARSER VỚI TOÀN BỘ file 'pdf'
+                            items = parse_4ps_po(pdf) # <-- THAY ĐỔI QUAN TRỌNG
                             is_recognized = True
                         
+                        # --- KẾT THÚC THAY ĐỔI ---
+
                         # --- XỬ LÝ KẾT QUẢ ---
                         if is_recognized:
                             for item in items:
