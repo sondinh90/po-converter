@@ -5,8 +5,8 @@ import re
 import os
 import io # Dùng để xử lý file trong bộ nhớ
 
-# --- HÀM BÓC TÁCH CHO 4PS (ĐÃ VIẾT LẠI ĐỂ HỖ TRỢ NHIỀU TRANG) ---
-def parse_4ps_po(pdf): # <-- THAY ĐỔI 1: Lấy cả file PDF
+# --- HÀM BÓC TÁCH CHO 4PS (ĐÃ SỬA LỖI LỌC) ---
+def parse_4ps_po(pdf):
     """
     Hàm này được viết RIÊNG để bóc tách PO của 4PS (hỗ trợ nhiều trang).
     """
@@ -14,7 +14,6 @@ def parse_4ps_po(pdf): # <-- THAY ĐỔI 1: Lấy cả file PDF
     items_list = []
 
     # --- BƯỚC 1: Lấy thông tin chung từ TRANG 1 ---
-    # Thông tin này chỉ có ở trang 1
     page1 = pdf.pages[0]
     full_text_page1 = page1.extract_text() 
 
@@ -37,14 +36,16 @@ def parse_4ps_po(pdf): # <-- THAY ĐỔI 1: Lấy cả file PDF
         
         if not tables:
             st.write(f"    > Không tìm thấy bảng nào trên trang {i+1}.")
-            continue # Không có bảng nào trên trang này
+            continue 
             
-        item_table = tables[-1] # Giả định bảng sản phẩm là bảng cuối
+        item_table = tables[-1] 
         
         # Lặp qua tất cả các dòng trong bảng
         for row in item_table:
-            # Đảm bảo dòng có đủ 8 cột (No, Code, Name, Unit, Qty, Price, Tax, Total)
-            if not row or len(row) < 8:
+            # --- KHỐI LỌC ĐÃ SỬA LỖI ---
+            
+            # SỬA LỖI 1: Nới lỏng điều kiện. Chỉ cần 6 cột (tới cột Price)
+            if not row or len(row) < 6: 
                 continue 
             
             product_code = row[1] # Cột "Product Code"
@@ -52,11 +53,16 @@ def parse_4ps_po(pdf): # <-- THAY ĐỔI 1: Lấy cả file PDF
             # Bỏ qua các dòng rác/header/total
             if product_code == "Product Code": # Bỏ qua header
                 continue
-            if "Total" in (row[0] or ""): # Bỏ qua dòng Total
+            
+            # SỬA LỖI 2: Kiểm tra "Total" ở cột Tên (row[2])
+            if (row[2] or "").strip() == "Total": # Bỏ qua dòng Total
                 continue
+
             if not product_code or product_code.strip() == "": # Bỏ qua dòng trống
                 continue
-                
+            
+            # --- KẾT THÚC KHỐI LỌC ---
+
             # Nếu qua được, đây là dòng dữ liệu
             quantity_str = row[4].replace(',', '') if row[4] else '0'
             price_str = row[5].replace(',', '') if row[5] else '0'
@@ -108,7 +114,6 @@ def create_hybrid_excel(standard_df, unrecognized_files_list):
                         
                         # Lặp qua từng trang trong PDF
                         for page in pdf.pages:
-                            # --- ĐÂY LÀ THAY ĐỔI QUAN TRỌNG ---
                             # Trích xuất text, giữ lại các dấu cách và xuống dòng
                             page_text = page.extract_text(layout=True, keep_blank_chars=True)
                             
@@ -170,8 +175,6 @@ if uploaded_files:
                             st.error(f"File {file_name} bị lỗi hoặc không có trang nào.")
                             continue
                         
-                        # --- THAY ĐỔI LOGIC GỌI HÀM ---
-                        
                         # 1. Vẫn lấy text trang 1 để NHẬN DIỆN
                         page1_text = pdf.pages[0].extract_text()
                         if page1_text is None: # Xử lý file ảnh/lỗi
@@ -185,7 +188,7 @@ if uploaded_files:
                         if "4PS CORPORATION" in page1_text or "CÔNG TY TNHH MTV KITCHEN 4PS" in page1_text: 
                             customer_name = "4PS"
                             # 3. GỌI HÀM PARSER VỚI TOÀN BỘ file 'pdf'
-                            items = parse_4ps_po(pdf) # <-- THAY ĐỔI QUAN TRỌNG
+                            items = parse_4ps_po(pdf) 
                             is_recognized = True
                         
                         # --- KẾT THÚC THAY ĐỔI ---
