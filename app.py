@@ -11,23 +11,23 @@ import io
 def clean_avolta_number(num_str):
     """
     Hàm chuyển đổi chuỗi sang số thực (float).
-    Xử lý linh hoạt dấu chấm/phẩy.
     """
     if not num_str: return 0.0
     s = str(num_str).strip()
-    # Chỉ giữ lại số, chấm, phẩy, dấu trừ
     s = re.sub(r'[^\d.,-]', '', s)
     
-    # Logic phát hiện định dạng:
     if ',' in s: 
-        # Trường hợp 1: Có dấu phẩy (vd: 1.200,50 hoặc 1200,50) -> Kiểu Âu
-        # Xóa chấm (hàng ngàn), thay phẩy bằng chấm (thập phân)
+        # Kiểu Âu: 1.200,50
         s = s.replace('.', '').replace(',', '.')
     else:
-        # Trường hợp 2: Chỉ có dấu chấm (vd: 10.00 hoặc 46.35 hoặc 1.000)
-        # Tạm thời coi dấu chấm là thập phân để giữ nguyên giá trị gốc,
-        # việc nhân 1000 sẽ do logic ở hàm parse quyết định dựa trên ngữ cảnh (Price vs Qty).
-        pass 
+        # Kiểu khác: 10.00 hoặc 1.000
+        # Xử lý thông minh dấu chấm
+        if '.' in s:
+            parts = s.split('.')
+            if len(parts) > 1 and len(parts[-1]) == 3:
+                 s = s.replace('.', '') # 1.000 -> 1000
+            else:
+                 pass # 10.00 -> 10.00
     
     try:
         return float(s)
@@ -35,7 +35,7 @@ def clean_avolta_number(num_str):
         return 0.0
 
 # ==========================================
-# 2. HÀM BÓC TÁCH 4PS (GIỮ NGUYÊN)
+# 2. HÀM BÓC TÁCH 4PS
 # ==========================================
 def parse_4ps_po(pdf):
     st.write("  > Nhận diện: Mẫu PO của 4PS. Đang xử lý...")
@@ -73,7 +73,7 @@ def parse_4ps_po(pdf):
                 "Buyer_Name": buyer_name,      
                 "Delivery_Date": delivery_date,
                 "Item_Code": product_code,
-                "Item_Name": row[2].replace('\n', ' '),
+                "Vendor No.": row[2].replace('\n', ' '), # <-- ĐÃ ĐỔI TÊN CỘT THEO YÊU CẦU
                 "Quantity": quantity_str,
                 "Price": price_str
             }
@@ -82,7 +82,7 @@ def parse_4ps_po(pdf):
     return items_list
 
 # ==========================================
-# 3. HÀM BÓC TÁCH AVOLTA (REGEX + LOGIC GIÁ MỚI)
+# 3. HÀM BÓC TÁCH AVOLTA (REGEX + CỘT MỚI)
 # ==========================================
 def parse_avolta_po(pdf):
     st.write("  > Nhận diện: Mẫu PO Avolta (SĐT 0903613502). Đang xử lý...")
@@ -120,7 +120,6 @@ def parse_avolta_po(pdf):
 
             match = line_start_pattern.match(line)
             if match:
-                # Lấy tất cả cụm số (có ít nhất 1 chữ số)
                 potential_numbers = [
                     n for n in re.findall(r'[\d.,]+', line) 
                     if any(char.isdigit() for char in n)
@@ -146,14 +145,11 @@ def parse_avolta_po(pdf):
                     except:
                         item_name = match.group(2)
 
-                    # --- XỬ LÝ SỐ (CẬP NHẬT) ---
+                    # Xử lý số
                     qty_final = clean_avolta_number(qty_raw)
                     price_final = clean_avolta_number(price_raw)
                     
-                    # Logic đặc biệt cho PRICE của Avolta:
-                    # Nếu giá trị < 1000 (ví dụ 46.35 hoặc 32.34), 
-                    # và không phải là số 0, thì nhân với 1000.
-                    # (Giả định giá tiền VND luôn >= 1000)
+                    # Fix lỗi giá tiền nhỏ (46.35 -> 46350)
                     if 0 < price_final < 1000:
                         price_final *= 1000
 
@@ -162,15 +158,15 @@ def parse_avolta_po(pdf):
                         "Buyer_Name": buyer_name,      
                         "Delivery_Date": delivery_date,
                         "Item_Code": item_code,
-                        "Item_Name": item_name,
-                        "Quantity": qty_final, # Giữ nguyên (để 0.5 vẫn là 0.5)
-                        "Price": price_final   # Đã áp dụng logic nhân 1000
+                        "Vendor No.": item_name, # <-- ĐÃ ĐỔI TÊN CỘT THEO YÊU CẦU
+                        "Quantity": qty_final,
+                        "Price": price_final
                     })
 
     return items_list
 
 # ==========================================
-# 4. HÀM TẠO EXCEL (HYBRID)
+# 4. HÀM TẠO EXCEL
 # ==========================================
 def create_hybrid_excel(standard_df, unrecognized_files_list):
     output = io.BytesIO()
@@ -182,7 +178,7 @@ def create_hybrid_excel(standard_df, unrecognized_files_list):
             pd.DataFrame(["Không có dữ liệu chuẩn hóa."]).to_excel(writer, sheet_name="TongHop_DonHang", index=False, header=False)
         
         if unrecognized_files_list:
-            st.write("--- Đang xử lý các file khác (Dump Text giữ Layout) ---")
+            st.write("--- Đang xử lý các file khác (Dump Text) ---")
             for uploaded_file in unrecognized_files_list:
                 safe_sheet_name = re.sub(r'[\\/*?:"<>|\[\]\s]', '_', uploaded_file.name.split('.')[0])[:30]
                 try:
@@ -202,16 +198,11 @@ def create_hybrid_excel(standard_df, unrecognized_files_list):
     return output.getvalue()
 
 # ==========================================
-# 5. GIAO DIỆN CHÍNH (STREAMLIT APP)
+# 5. GIAO DIỆN CHÍNH
 # ==========================================
 st.set_page_config(page_title="Công cụ tổng hợp PO", layout="wide")
 st.title("🚀 Công cụ trích xuất dữ liệu PO sang Excel")
-st.markdown("""
-**Hỗ trợ:**
-1.  **4PS Corporation:** Tự động nhận diện bảng.
-2.  **Avolta (SĐT 0903613502):** Tự động nhận diện (Regex Scan, Auto-fix Price).
-3.  **Các file khác:** Dump nội dung sang sheet riêng.
-""")
+st.markdown("Hỗ trợ: 4PS & Avolta (SĐT 0903613502). Cột Tên hàng sẽ là **Vendor No.**")
 
 uploaded_files = st.file_uploader("Tải file PDF lên:", type="pdf", accept_multiple_files=True)
 
@@ -239,7 +230,7 @@ if uploaded_files and st.button("Xử lý tất cả file"):
                     is_recognized = False
                     customer_name = ""
 
-                    # --- LOGIC NHẬN DIỆN ---
+                    # --- NHẬN DIỆN ---
                     if "4PS CORPORATION" in page1_text or "CÔNG TY TNHH MTV KITCHEN 4PS" in page1_text:
                         customer_name = "4PS"
                         items = parse_4ps_po(pdf)
@@ -268,13 +259,13 @@ if uploaded_files and st.button("Xử lý tất cả file"):
     
     if not df_standard.empty:
         try:
-            # Convert lại lần cuối cho 4PS (Avolta đã xử lý rồi)
             if '4PS' in df_standard['Customer'].values:
                  df_standard['Quantity'] = pd.to_numeric(df_standard['Quantity'], errors='coerce').fillna(0)
                  df_standard['Price'] = pd.to_numeric(df_standard['Price'], errors='coerce').fillna(0)
         except: pass
         
-        cols = ['Customer', 'Order_Number', 'Buyer_Name', 'Delivery_Date', 'Item_Code', 'Item_Name', 'Quantity', 'Price', 'File_Name']
+        # Sắp xếp cột (Đã thay Item_Name bằng Vendor No.)
+        cols = ['Customer', 'Order_Number', 'Buyer_Name', 'Delivery_Date', 'Item_Code', 'Vendor No.', 'Quantity', 'Price', 'File_Name']
         final_cols = [c for c in cols if c in df_standard.columns]
         df_standard = df_standard[final_cols]
         
