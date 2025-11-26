@@ -5,25 +5,46 @@ import re
 import io
 
 # ==========================================
-# 1. CÁC HÀM HỖ TRỢ (HELPER)
+# 1. CÁC HÀM HỖ TRỢ (HELPER) - ĐÃ SỬA LOGIC SỐ
 # ==========================================
 
 def clean_avolta_number(num_str):
     """
-    Chuyển đổi chuỗi số kiểu Âu sang float chuẩn.
-    "1.200,50" -> 1200.5
+    Xử lý số thông minh: Tự động phát hiện kiểu Âu hay kiểu Mỹ.
     """
     if not num_str: return 0.0
     s = str(num_str).strip()
     
-    # Giữ lại số, dấu chấm, dấu phẩy, dấu trừ
+    # Loại bỏ các ký tự lạ, chỉ giữ lại số, chấm, phẩy, trừ
     s = re.sub(r'[^\d.,-]', '', s)
     
-    # 1. Bỏ dấu chấm (ngăn cách hàng ngàn)
-    s = s.replace('.', '')
-    # 2. Thay dấu phẩy (thập phân) thành dấu chấm
-    s = s.replace(',', '.')
+    # TRƯỜNG HỢP 1: Có dấu phẩy (,) -> Khả năng cao là kiểu Âu (1.200,50)
+    if ',' in s:
+        # Nếu có cả chấm và phẩy (vd: 1.200,50) -> Bỏ chấm, thay phẩy = chấm
+        if '.' in s:
+            s = s.replace('.', '')
+            s = s.replace(',', '.')
+        # Nếu chỉ có phẩy (vd: 1200,50) -> Thay phẩy = chấm
+        else:
+            s = s.replace(',', '.')
+            
+    # TRƯỜNG HỢP 2: Không có phẩy, chỉ có chấm (vd: 10.00 hoặc 1.000)
+    # Đây là ca khó. Thường Avolta dùng chấm làm ngàn (1.000).
+    # Nhưng nếu PDF extract ra là 10.00 (mười) thì xóa chấm sẽ thành 1000 (sai).
     
+    # Logic sửa đổi:
+    # Nếu có chấm:
+    # - Nếu phần sau dấu chấm có đúng 3 ký tự (vd 1.000) -> Nghi ngờ là ngàn -> Xóa chấm
+    # - Nếu phần sau dấu chấm khác 3 ký tự (vd 10.00, 46.35) -> Nghi ngờ là thập phân -> Giữ nguyên
+    elif '.' in s:
+        parts = s.split('.')
+        # Nếu phần đuôi có đúng 3 số (vd 46.350) -> Rất có thể là 46 ngàn
+        if len(parts) > 1 and len(parts[-1]) == 3:
+             s = s.replace('.', '')
+        # Ngược lại (vd 46.35 hoặc 10.00) -> Giữ nguyên dấu chấm là thập phân
+        else:
+             pass 
+
     try:
         return float(s)
     except ValueError:
@@ -123,27 +144,22 @@ def parse_avolta_po(pdf):
 
             match = line_start_pattern.match(line)
             if match:
-                # Tìm tất cả các cụm "số" trong dòng (bao gồm dấu . và ,)
-                # Chỉ lấy cụm có ít nhất 1 chữ số
+                # Tìm tất cả các cụm "số" trong dòng
                 potential_numbers = [
                     n for n in re.findall(r'[\d.,]+', line) 
                     if any(char.isdigit() for char in n)
                 ]
                 
-                # Logic: Dòng sản phẩm phải có ít nhất 3 nhóm số (Code, Qty, Price)
                 if len(potential_numbers) >= 3:
                     item_code = potential_numbers[0]
                     
-                    # Qty là số thứ 2
                     qty_raw = potential_numbers[1]
                     
-                    # Price: Nếu dòng dài (có Total) -> Kế cuối. Nếu ngắn -> Cuối.
                     if len(potential_numbers) >= 4:
                         price_raw = potential_numbers[-2]
                     else:
                         price_raw = potential_numbers[-1]
                     
-                    # Tách tên sản phẩm (nằm giữa Code và Qty)
                     try:
                         start_index = line.find(item_code) + len(item_code)
                         end_index = line.find(qty_raw, start_index)
@@ -160,8 +176,8 @@ def parse_avolta_po(pdf):
                         "Delivery_Date": delivery_date,
                         "Item_Code": item_code,
                         "Item_Name": item_name,
-                        "Quantity": clean_avolta_number(qty_raw), # Xử lý số Âu
-                        "Price": clean_avolta_number(price_raw)   # Xử lý số Âu
+                        "Quantity": clean_avolta_number(qty_raw), # Dùng hàm mới
+                        "Price": clean_avolta_number(price_raw)   # Dùng hàm mới
                     })
 
     return items_list
@@ -275,6 +291,7 @@ if uploaded_files and st.button("Xử lý tất cả file"):
     if not df_standard.empty:
         # Convert số lượng/đơn giá sang số (cho 4PS, vì Avolta đã convert trong hàm parse rồi)
         try:
+            # Lưu ý: Avolta đã float sẵn, 4PS đang là str -> convert lại để chắc chắn
             df_standard['Quantity'] = pd.to_numeric(df_standard['Quantity'], errors='coerce').fillna(0)
             df_standard['Price'] = pd.to_numeric(df_standard['Price'], errors='coerce').fillna(0)
         except: pass
