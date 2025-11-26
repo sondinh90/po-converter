@@ -2,18 +2,41 @@ import streamlit as st
 import pandas as pd
 import pdfplumber
 import re
-import os
-import io # Dùng để xử lý file trong bộ nhớ
+import io
 
-# --- HÀM BÓC TÁCH CHO 4PS (ĐÃ SỬA LỖI LỌC) ---
+# ==========================================
+# 1. CÁC HÀM HỖ TRỢ (HELPER)
+# ==========================================
+
+def clean_avolta_number(num_str):
+    """
+    Chuyển đổi chuỗi số kiểu Âu sang float chuẩn.
+    "1.200,50" -> 1200.5
+    """
+    if not num_str: return 0.0
+    s = str(num_str).strip()
+    
+    # Giữ lại số, dấu chấm, dấu phẩy, dấu trừ
+    s = re.sub(r'[^\d.,-]', '', s)
+    
+    # 1. Bỏ dấu chấm (ngăn cách hàng ngàn)
+    s = s.replace('.', '')
+    # 2. Thay dấu phẩy (thập phân) thành dấu chấm
+    s = s.replace(',', '.')
+    
+    try:
+        return float(s)
+    except ValueError:
+        return 0.0
+
+# ==========================================
+# 2. HÀM BÓC TÁCH 4PS (TABLE STRATEGY)
+# ==========================================
 def parse_4ps_po(pdf):
-    """
-    Hàm này được viết RIÊNG để bóc tách PO của 4PS (hỗ trợ nhiều trang).
-    """
-    st.write("  > Nhận diện: Mẫu PO của 4PS. Đang xử lý (hỗ trợ nhiều trang)...")
+    st.write("  > Nhận diện: Mẫu PO của 4PS. Đang xử lý...")
     items_list = []
 
-    # --- BƯỚC 1: Lấy thông tin chung từ TRANG 1 ---
+    # Lấy thông tin Header từ trang 1
     page1 = pdf.pages[0]
     full_text_page1 = page1.extract_text() 
 
@@ -25,45 +48,23 @@ def parse_4ps_po(pdf):
     delivery_date = delivery_date_match.group(1).strip() if delivery_date_match else None
     buyer_name = buyer_name_match.group(1).strip() if buyer_name_match else None
 
-    # --- BƯỚC 2: Lặp qua TẤT CẢ các trang để lấy BẢNG SẢN PHẨM ---
-    st.write(f"  > File này có {len(pdf.pages)} trang. Đang quét tất cả...")
-    
+    # Lặp qua TẤT CẢ các trang
     for i, page in enumerate(pdf.pages):
-        st.write(f"    > Đang xử lý trang {i+1}...")
         tables = page.extract_tables({"vertical_strategy": "lines", "horizontal_strategy": "lines"})
-        if not tables:
-            tables = page.extract_tables() 
+        if not tables: tables = page.extract_tables()
         
-        if not tables:
-            st.write(f"    > Không tìm thấy bảng nào trên trang {i+1}.")
-            continue 
+        if not tables: continue 
             
         item_table = tables[-1] 
-        
-        # Lặp qua tất cả các dòng trong bảng
         for row in item_table:
-            # --- KHỐI LỌC ĐÃ SỬA LỖI ---
+            # Logic lọc rác của 4PS
+            if not row or len(row) < 6: continue 
+            product_code = row[1]
+            if product_code == "Product Code": continue
+            if (row[2] or "").strip() == "Total": continue
+            if not product_code or product_code.strip() == "": continue
             
-            # SỬA LỖI 1: Nới lỏng điều kiện. Chỉ cần 6 cột (tới cột Price)
-            if not row or len(row) < 6: 
-                continue 
-            
-            product_code = row[1] # Cột "Product Code"
-
-            # Bỏ qua các dòng rác/header/total
-            if product_code == "Product Code": # Bỏ qua header
-                continue
-            
-            # SỬA LỖI 2: Kiểm tra "Total" ở cột Tên (row[2])
-            if (row[2] or "").strip() == "Total": # Bỏ qua dòng Total
-                continue
-
-            if not product_code or product_code.strip() == "": # Bỏ qua dòng trống
-                continue
-            
-            # --- KẾT THÚC KHỐI LỌC ---
-
-            # Nếu qua được, đây là dòng dữ liệu
+            # 4PS dùng số chuẩn (dấu phẩy ngàn, chấm thập phân) -> Chỉ cần bỏ phẩy
             quantity_str = row[4].replace(',', '') if row[4] else '0'
             price_str = row[5].replace(',', '') if row[5] else '0'
 
@@ -73,181 +74,227 @@ def parse_4ps_po(pdf):
                 "Delivery_Date": delivery_date,
                 "Item_Code": product_code,
                 "Item_Name": row[2].replace('\n', ' '),
-                "Quantity": quantity_str,
-                "Price": price_str
+                "Quantity": quantity_str, # Sẽ convert sau
+                "Price": price_str        # Sẽ convert sau
             }
             items_list.append(standard_item)
     
     return items_list
 
-# --- HÀM TẠO EXCEL (Giữ nguyên logic "dump thô") ---
+# ==========================================
+# 3. HÀM BÓC TÁCH AVOLTA (REGEX SCAN STRATEGY)
+# ==========================================
+def parse_avolta_po(pdf):
+    st.write("  > Nhận diện: Mẫu PO Avolta (SĐT 0903613502). Đang xử lý...")
+    items_list = []
+
+    # Lấy thông tin Header từ trang 1
+    page1 = pdf.pages[0]
+    page1_text = page1.extract_text() or ""
+    
+    order_num_match = re.search(r"PO No\.[\s\S]*?(\S+)", page1_text)
+    order_number = order_num_match.group(1).strip() if order_num_match else "Unknown"
+    
+    delivery_date_match = re.search(r"Order Date\s*(\d{2}/\d{2}/\d{4})", page1_text)
+    delivery_date = delivery_date_match.group(1).strip() if delivery_date_match else None
+    
+    buyer_name = "Unknown"
+    if "Delivery Address" in page1_text:
+        parts = page1_text.split("Delivery Address")
+        if len(parts) > 1:
+            lines = parts[1].strip().split('\n')
+            buyer_name = " ".join(lines[:2]).strip()
+
+    # Regex quét dòng: Bắt đầu bằng SỐ (Code) + Khoảng trắng + TEXT
+    line_start_pattern = re.compile(r"^(\d+)\s+(.+)")
+
+    # Lặp qua TẤT CẢ các trang
+    for page in pdf.pages:
+        text = page.extract_text()
+        if not text: continue
+        
+        lines = text.split('\n')
+        for line in lines:
+            line = line.strip()
+            
+            # Bỏ qua các dòng tiêu đề/footer
+            if "PO No" in line or "Page" in line or "Total" in line or "Item No" in line:
+                continue
+
+            match = line_start_pattern.match(line)
+            if match:
+                # Tìm tất cả các cụm "số" trong dòng (bao gồm dấu . và ,)
+                # Chỉ lấy cụm có ít nhất 1 chữ số
+                potential_numbers = [
+                    n for n in re.findall(r'[\d.,]+', line) 
+                    if any(char.isdigit() for char in n)
+                ]
+                
+                # Logic: Dòng sản phẩm phải có ít nhất 3 nhóm số (Code, Qty, Price)
+                if len(potential_numbers) >= 3:
+                    item_code = potential_numbers[0]
+                    
+                    # Qty là số thứ 2
+                    qty_raw = potential_numbers[1]
+                    
+                    # Price: Nếu dòng dài (có Total) -> Kế cuối. Nếu ngắn -> Cuối.
+                    if len(potential_numbers) >= 4:
+                        price_raw = potential_numbers[-2]
+                    else:
+                        price_raw = potential_numbers[-1]
+                    
+                    # Tách tên sản phẩm (nằm giữa Code và Qty)
+                    try:
+                        start_index = line.find(item_code) + len(item_code)
+                        end_index = line.find(qty_raw, start_index)
+                        if end_index != -1:
+                            item_name = line[start_index:end_index].strip()
+                        else:
+                            item_name = match.group(2)
+                    except:
+                        item_name = match.group(2)
+
+                    items_list.append({
+                        "Order_Number": order_number,    
+                        "Buyer_Name": buyer_name,      
+                        "Delivery_Date": delivery_date,
+                        "Item_Code": item_code,
+                        "Item_Name": item_name,
+                        "Quantity": clean_avolta_number(qty_raw), # Xử lý số Âu
+                        "Price": clean_avolta_number(price_raw)   # Xử lý số Âu
+                    })
+
+    return items_list
+
+# ==========================================
+# 4. HÀM TẠO EXCEL (HYBRID)
+# ==========================================
 def create_hybrid_excel(standard_df, unrecognized_files_list):
-    """
-    Tạo file Excel trong bộ nhớ:
-    - Sheet 1: Dữ liệu đã chuẩn hóa (standard_df)
-    - Các sheet khác: Dữ liệu thô (TRÍCH XUẤT VĂN BẢN GIỮ LAYOUT) từ các file không nhận diện
-    """
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         
-        # --- VIẾT SHEET 1: DỮ LIỆU ĐÃ CHUẨN HÓA (4PS) ---
+        # Sheet 1: Dữ liệu chuẩn hóa (4PS + Avolta)
         if not standard_df.empty:
-            standard_df.to_excel(writer, sheet_name="TongHop_4PS", index=False)
+            standard_df.to_excel(writer, sheet_name="TongHop_DonHang", index=False)
         else:
-            # Tạo sheet rỗng nếu không có dữ liệu 4PS
-            pd.DataFrame(["Không có dữ liệu PO 4PS nào được tìm thấy."]).to_excel(writer, sheet_name="TongHop_4PS", index=False, header=False)
+            pd.DataFrame(["Không có dữ liệu chuẩn hóa."]).to_excel(writer, sheet_name="TongHop_DonHang", index=False, header=False)
         
-        # --- VIẾT CÁC SHEET THÔ (RAW LAYOUT TEXT DUMP) ---
+        # Các Sheet khác: Dump text thô (Layout)
         if unrecognized_files_list:
-            st.write("--- Đang xử lý các file PDF khác (trích xuất text giữ layout) ---")
+            st.write("--- Đang xử lý các file khác (Dump Text giữ Layout) ---")
             for uploaded_file in unrecognized_files_list:
-                
-                # Tạo tên sheet an toàn
-                safe_sheet_name = re.sub(r'[\\/*?:"<>|\[\]\s]', '_', uploaded_file.name.split('.')[0])
-                safe_sheet_name = safe_sheet_name[:30]
-                
+                safe_sheet_name = re.sub(r'[\\/*?:"<>|\[\]\s]', '_', uploaded_file.name.split('.')[0])[:30]
                 try:
-                    # Đặt lại con trỏ file về đầu
                     uploaded_file.seek(0)
                     with pdfplumber.open(uploaded_file) as pdf:
-                        all_lines_for_sheet = []
-                        
-                        # Lặp qua từng trang trong PDF
+                        all_lines = []
                         for page in pdf.pages:
-                            # Trích xuất text, giữ lại các dấu cách và xuống dòng
-                            page_text = page.extract_text(layout=True, keep_blank_chars=True)
-                            
-                            if page_text:
-                                # Tách text thành các dòng
-                                lines = page_text.split('\n')
-                                all_lines_for_sheet.extend(lines)
-                            
-                            all_lines_for_sheet.append("--- HẾT TRANG ---") # Thêm 1 dòng ngăn cách
+                            # keep_blank_chars=True giúp giữ khoảng cách, nhìn giống PDF hơn
+                            text = page.extract_text(layout=True, keep_blank_chars=True)
+                            if text: all_lines.extend(text.split('\n'))
+                            all_lines.append("--- END PAGE ---")
                     
-                    if all_lines_for_sheet:
-                        # Đưa mỗi dòng text vào 1 dòng Excel
-                        df_raw = pd.DataFrame(all_lines_for_sheet)
-                        df_raw.to_excel(writer, sheet_name=safe_sheet_name, index=False, header=False)
-                        st.write(f"  > Đã dump text (giữ layout) từ '{uploaded_file.name}' sang sheet '{safe_sheet_name}'")
-                    else:
-                        pd.DataFrame([f"Không tìm thấy text nào trong file {uploaded_file.name}"]).to_excel(writer, sheet_name=safe_sheet_name, index=False, header=False)
-
+                    if all_lines:
+                        pd.DataFrame(all_lines).to_excel(writer, sheet_name=safe_sheet_name, index=False, header=False)
                 except Exception as e:
-                    st.error(f"Lỗi khi dump file {uploaded_file.name}: {e}")
-                    # Ghi lỗi vào sheet
-                    pd.DataFrame([f"Lỗi khi xử lý file: {e}"]).to_excel(writer, sheet_name=safe_sheet_name, index=False, header=False)
+                    st.error(f"Lỗi dump file {uploaded_file.name}: {e}")
 
     return output.getvalue()
 
-# --- GIAO DIỆN WEB STREAMLIT ---
+# ==========================================
+# 5. GIAO DIỆN CHÍNH (STREAMLIT APP)
+# ==========================================
 st.set_page_config(page_title="Công cụ tổng hợp PO", layout="wide")
 st.title("🚀 Công cụ trích xuất dữ liệu PO sang Excel")
-st.write("Tải lên các file PDF của 4PS và các file PDF khác.")
-st.write("Các file 4PS (kể cả nhiều trang) sẽ được gộp vào sheet 'TongHop_4PS'. Các file PDF khác sẽ được trích xuất *toàn bộ văn bản (giữ layout)* vào các sheet riêng.")
+st.markdown("""
+**Hỗ trợ:**
+1.  **4PS Corporation:** Tự động nhận diện bảng (xử lý nhiều trang).
+2.  **Avolta (SĐT 0903613502):** Tự động nhận diện dòng (xử lý nhiều trang, số kiểu Âu).
+3.  **Các file khác:** Tự động chuyển toàn bộ nội dung sang sheet riêng.
+""")
 
-# 1. Khu vực tải file
-uploaded_files = st.file_uploader(
-    "Kéo và thả file PDF của bạn vào đây:",
-    type="pdf",
-    accept_multiple_files=True
-)
+uploaded_files = st.file_uploader("Tải file PDF lên:", type="pdf", accept_multiple_files=True)
 
-if uploaded_files:
-    st.success(f"Đã nhận {len(uploaded_files)} file. Nhấn 'Xử lý' để bắt đầu.")
+if uploaded_files and st.button("Xử lý tất cả file"):
+    all_standardized_data = []
+    unrecognized_files = []
     
-    # 2. Nút bấm xử lý
-    if st.button("Xử lý tất cả file"):
-        all_standardized_data = []
-        unrecognized_files = [] # <-- DANH SÁCH FILE SẼ BỊ DUMP
+    progress_bar = st.progress(0)
+    
+    with st.expander("Chi tiết quá trình xử lý:", expanded=True):
+        for i, uploaded_file in enumerate(uploaded_files):
+            file_name = uploaded_file.name
+            st.write(f"--- Đang mở: **{file_name}** ---")
+            
+            try:
+                uploaded_file.seek(0)
+                with pdfplumber.open(uploaded_file) as pdf:
+                    if not pdf.pages:
+                        st.error("File lỗi hoặc không có trang.")
+                        continue
+                    
+                    # Lấy text trang 1 để nhận diện
+                    page1_text = pdf.pages[0].extract_text() or ""
+                    
+                    items = []
+                    is_recognized = False
+                    customer_name = ""
+
+                    # --- LOGIC NHẬN DIỆN ---
+                    # 1. Check 4PS
+                    if "4PS CORPORATION" in page1_text or "CÔNG TY TNHH MTV KITCHEN 4PS" in page1_text:
+                        customer_name = "4PS"
+                        items = parse_4ps_po(pdf)
+                        is_recognized = True
+                    
+                    # 2. Check Avolta (Dựa vào SĐT)
+                    elif "0903613502" in page1_text:
+                        customer_name = "Avolta"
+                        items = parse_avolta_po(pdf)
+                        is_recognized = True
+                    
+                    # --- KẾT QUẢ ---
+                    if is_recognized:
+                        for item in items:
+                            item['Customer'] = customer_name
+                            item['File_Name'] = file_name
+                            all_standardized_data.append(item)
+                        st.success(f"  > Đã xử lý xong ({customer_name}). Lấy được {len(items)} dòng.")
+                    else:
+                        st.info("  > Không nhận diện được mẫu. Chuyển sang chế độ dump text.")
+                        unrecognized_files.append(uploaded_file)
+
+            except Exception as e:
+                st.error(f"Lỗi khi xử lý file {file_name}: {e}")
+            
+            progress_bar.progress((i + 1) / len(uploaded_files))
+
+    # TỔNG HỢP VÀ TẠO FILE EXCEL
+    df_standard = pd.DataFrame(all_standardized_data)
+    
+    if not df_standard.empty:
+        # Convert số lượng/đơn giá sang số (cho 4PS, vì Avolta đã convert trong hàm parse rồi)
+        try:
+            df_standard['Quantity'] = pd.to_numeric(df_standard['Quantity'], errors='coerce').fillna(0)
+            df_standard['Price'] = pd.to_numeric(df_standard['Price'], errors='coerce').fillna(0)
+        except: pass
         
-        progress_bar = st.progress(0)
+        # Sắp xếp cột
+        cols = ['Customer', 'Order_Number', 'Buyer_Name', 'Delivery_Date', 'Item_Code', 'Item_Name', 'Quantity', 'Price', 'File_Name']
+        final_cols = [c for c in cols if c in df_standard.columns]
+        df_standard = df_standard[final_cols]
         
-        with st.expander("Xem chi tiết quá trình xử lý:"):
-            for i, uploaded_file in enumerate(uploaded_files):
-                file_name = uploaded_file.name
-                st.write(f"--- Đang mở file: {file_name} ---")
-                
-                try:
-                    # Đặt lại con trỏ file về đầu
-                    uploaded_file.seek(0)
-                    with pdfplumber.open(uploaded_file) as pdf: # 'pdf' là toàn bộ file
-                        if not pdf.pages:
-                            st.error(f"File {file_name} bị lỗi hoặc không có trang nào.")
-                            continue
-                        
-                        # 1. Vẫn lấy text trang 1 để NHẬN DIỆN
-                        page1_text = pdf.pages[0].extract_text()
-                        if page1_text is None: # Xử lý file ảnh/lỗi
-                             page1_text = ""
-                             st.warning(f"  > Không thể đọc text từ trang 1 của file {file_name}.")
-                        
-                        items = []
-                        is_recognized = False
-                        
-                        # 2. Logic nhận diện vẫn dùng page1_text
-                        if "4PS CORPORATION" in page1_text or "CÔNG TY TNHH MTV KITCHEN 4PS" in page1_text: 
-                            customer_name = "4PS"
-                            # 3. GỌI HÀM PARSER VỚI TOÀN BỘ file 'pdf'
-                            items = parse_4ps_po(pdf) 
-                            is_recognized = True
-                        
-                        # --- KẾT THÚC THAY ĐỔI ---
+        st.success(f"🎉 Hoàn tất! Tổng hợp được {len(df_standard)} dòng dữ liệu chuẩn hóa.")
+        st.dataframe(df_standard)
+    else:
+        st.warning("Chưa tìm thấy dữ liệu chuẩn hóa nào (4PS/Avolta).")
 
-                        # --- XỬ LÝ KẾT QUẢ ---
-                        if is_recognized:
-                            for item in items:
-                                item['Customer'] = customer_name 
-                                item['File_Name'] = file_name 
-                                all_standardized_data.append(item)
-                            st.write(f"  > Hoàn tất file 4PS. Trích xuất được {len(items)} dòng sản phẩm.")
-                        else:
-                            # --- NẾU KHÔNG NHẬN DIỆN, THÊM VÀO DANH SÁCH CHỜ DUMP ---
-                            st.info(f"  > Không phải file 4PS. Sẽ dump text (giữ layout) file này sang sheet riêng.")
-                            unrecognized_files.append(uploaded_file)
-                
-                except Exception as e:
-                    st.error(f"!!! LỖI NGHIÊM TRỌNG khi xử lý file {file_name}: {e}")
-                
-                progress_bar.progress((i + 1) / len(uploaded_files))
-
-        # 3. Xử lý dữ liệu sau khi lặp
-        if not all_standardized_data and not unrecognized_files:
-            st.error("Hoàn tất, nhưng không có dữ liệu nào được trích xuất.")
-        else:
-            df_standard = pd.DataFrame(all_standardized_data)
-            
-            # Chỉ xử lý/hiển thị bảng chuẩn hóa nếu có
-            if not df_standard.empty:
-                try:
-                    df_standard['Quantity'] = pd.to_numeric(df_standard['Quantity'], errors='coerce').fillna(0)
-                    df_standard['Price'] = pd.to_numeric(df_standard['Price'], errors='coerce').fillna(0)
-                except Exception as e:
-                    st.warning(f"[CẢNH BÁO] Không thể dọn dẹp dữ liệu số: {e}")
-
-                columns_order = [
-                    'Customer', 'Order_Number', 'Buyer_Name', 'Delivery_Date', 
-                    'Item_Code', 'Item_Name', 'Quantity', 'Price', 
-                    'File_Name'
-                ]
-                final_columns = [col for col in columns_order if col in df_standard.columns]
-                df_standard = df_standard[final_columns]
-                
-                st.success(f"🎉 XỬ LÝ DỮ LIỆU 4PS HOÀN TẤT! 🎉")
-                st.write(f"Đã gộp tổng cộng {len(df_standard)} dòng dữ liệu từ {df_standard['File_Name'].nunique()} file 4PS.")
-                st.dataframe(df_standard) # Hiển thị bảng kết quả chuẩn hóa
-            else:
-                st.info("Không tìm thấy PO 4PS nào để gộp.")
-
-            if unrecognized_files:
-                st.info(f"Sẵn sàng dump text (giữ layout) từ {len(unrecognized_files)} file PDF khác sang các sheet riêng.")
-            
-            # 4. Nút tải file
-            # Gọi hàm tạo excel "hybrid" mới
-            excel_data = create_hybrid_excel(df_standard, unrecognized_files)
-            
-            st.download_button(
-                label="📥 Tải file Excel tổng hợp (Gộp 4PS + Text Layout)",
-                data=excel_data,
-                file_name="TongHop_PO_va_FileTho.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+    # Tạo file Excel hybrid
+    excel_data = create_hybrid_excel(df_standard, unrecognized_files)
+    
+    st.download_button(
+        label="📥 Tải file Excel kết quả",
+        data=excel_data,
+        file_name="TongHop_PO_Final.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
