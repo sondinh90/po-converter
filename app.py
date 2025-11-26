@@ -17,22 +17,61 @@ def clean_avolta_number(num_str):
     s = re.sub(r'[^\d.,-]', '', s)
     
     if ',' in s: 
-        # Kiểu Âu: 1.200,50
         s = s.replace('.', '').replace(',', '.')
     else:
-        # Kiểu khác: 10.00 hoặc 1.000
-        # Xử lý thông minh dấu chấm
         if '.' in s:
             parts = s.split('.')
             if len(parts) > 1 and len(parts[-1]) == 3:
-                 s = s.replace('.', '') # 1.000 -> 1000
+                 s = s.replace('.', '')
             else:
-                 pass # 10.00 -> 10.00
-    
+                 pass
     try:
         return float(s)
     except ValueError:
         return 0.0
+
+def clean_product_name(name):
+    """
+    Hàm làm sạch tên sản phẩm theo yêu cầu đặc biệt.
+    Ví dụ: "Xa Veg Lettuce, Iceberg Kg" -> "Xa Lach, Iceberg"
+           "Hanh Tay - Veg Onion, Peeled Kg (BK)" -> "Hanh Tay - (BK)"
+    """
+    if not name: return ""
+    
+    # 1. Sửa các lỗi đặc thù (Hard replacement)
+    # Thay "Xa Veg" thành "Xa Lach" (do PDF thường bị mất chữ Lach)
+    name = name.replace("Xa Veg", "Xa Lach")
+    
+    # 2. Danh sách các từ cần XÓA (Tiếng Anh/Đơn vị thừa)
+    remove_words = [
+        "Veg", "Herb", "Fruit", "Flower", "Kg", "kg", "KG",
+        "Lettuce", "Onion", "Tomato", "Peeled", "Fresh", "Sliced", "Slice",
+        "Beansprouts", "Carrots", "Chillies", "Ginger", "Saw Leaves",
+        "Chive", "Coriander", "Knotweed", "Lemongrass", "Mint", 
+        "Morning Glory", "Basil", "Lemon Leaves", "Bok Choy", "Cabbage", 
+        "Celery", "Cucumber", "Shallot", "Spring"
+    ]
+    
+    # Xóa từng từ trong danh sách (không phân biệt hoa thường)
+    for word in remove_words:
+        # Dùng regex để thay thế word đứng riêng lẻ hoặc dính dấu câu
+        pattern = re.compile(r'\b' + re.escape(word) + r'\b', re.IGNORECASE)
+        name = pattern.sub('', name)
+
+    # 3. Làm sạch dấu câu và khoảng trắng thừa
+    # Thay thế nhiều dấu phẩy liên tiếp thành 1
+    name = re.sub(r',+', ',', name)
+    # Thay thế dấu gạch ngang thừa
+    name = re.sub(r'-+', '-', name)
+    # Xóa khoảng trắng thừa
+    name = re.sub(r'\s+', ' ', name).strip()
+    # Xóa dấu phẩy/gạch ngang ở đầu/cuối câu
+    name = name.strip(', -')
+    
+    # Sửa lỗi thẩm mỹ cuối cùng: ", ," -> ","
+    name = name.replace(" ,", ",")
+    
+    return name
 
 # ==========================================
 # 2. HÀM BÓC TÁCH 4PS
@@ -67,13 +106,17 @@ def parse_4ps_po(pdf):
             
             quantity_str = row[4].replace(',', '') if row[4] else '0'
             price_str = row[5].replace(',', '') if row[5] else '0'
+            
+            # Áp dụng làm sạch tên cho cả 4PS (nếu cần đồng bộ)
+            # row[2] là Item Name
+            cleaned_name = row[2].replace('\n', ' ')
 
             standard_item = {
                 "Order_Number": order_number,    
                 "Buyer_Name": buyer_name,      
                 "Delivery_Date": delivery_date,
                 "Item_Code": product_code,
-                "Vendor No.": row[2].replace('\n', ' '), # <-- ĐÃ ĐỔI TÊN CỘT THEO YÊU CẦU
+                "Vendor No.": cleaned_name, 
                 "Quantity": quantity_str,
                 "Price": price_str
             }
@@ -82,13 +125,12 @@ def parse_4ps_po(pdf):
     return items_list
 
 # ==========================================
-# 3. HÀM BÓC TÁCH AVOLTA (REGEX + CỘT MỚI)
+# 3. HÀM BÓC TÁCH AVOLTA (REGEX + CLEAN NAME)
 # ==========================================
 def parse_avolta_po(pdf):
     st.write("  > Nhận diện: Mẫu PO Avolta (SĐT 0903613502). Đang xử lý...")
     items_list = []
 
-    # 1. Header
     page1 = pdf.pages[0]
     page1_text = page1.extract_text() or ""
     
@@ -105,7 +147,7 @@ def parse_avolta_po(pdf):
             lines = parts[1].strip().split('\n')
             buyer_name = " ".join(lines[:2]).strip()
 
-    # 2. Xử lý dữ liệu (Regex Scan)
+    # Regex Scan
     line_start_pattern = re.compile(r"^(\d+)\s+(.+)")
 
     for page in pdf.pages:
@@ -134,22 +176,22 @@ def parse_avolta_po(pdf):
                     else:
                         price_raw = potential_numbers[-1]
                     
-                    # Tách tên
                     try:
                         start_index = line.find(item_code) + len(item_code)
                         end_index = line.find(qty_raw, start_index)
                         if end_index != -1:
-                            item_name = line[start_index:end_index].strip()
+                            raw_item_name = line[start_index:end_index].strip()
                         else:
-                            item_name = match.group(2)
+                            raw_item_name = match.group(2)
                     except:
-                        item_name = match.group(2)
+                        raw_item_name = match.group(2)
 
-                    # Xử lý số
+                    # --- ÁP DỤNG LÀM SẠCH TÊN ---
+                    final_name = clean_product_name(raw_item_name)
+
                     qty_final = clean_avolta_number(qty_raw)
                     price_final = clean_avolta_number(price_raw)
                     
-                    # Fix lỗi giá tiền nhỏ (46.35 -> 46350)
                     if 0 < price_final < 1000:
                         price_final *= 1000
 
@@ -158,7 +200,7 @@ def parse_avolta_po(pdf):
                         "Buyer_Name": buyer_name,      
                         "Delivery_Date": delivery_date,
                         "Item_Code": item_code,
-                        "Vendor No.": item_name, # <-- ĐÃ ĐỔI TÊN CỘT THEO YÊU CẦU
+                        "Vendor No.": final_name, # <-- Tên đã làm sạch
                         "Quantity": qty_final,
                         "Price": price_final
                     })
@@ -202,7 +244,7 @@ def create_hybrid_excel(standard_df, unrecognized_files_list):
 # ==========================================
 st.set_page_config(page_title="Công cụ tổng hợp PO", layout="wide")
 st.title("🚀 Công cụ trích xuất dữ liệu PO sang Excel")
-st.markdown("Hỗ trợ: 4PS & Avolta (SĐT 0903613502). Cột Tên hàng sẽ là **Vendor No.**")
+st.markdown("Hỗ trợ: 4PS & Avolta (SĐT 0903613502). Đã tích hợp làm sạch tên sản phẩm.")
 
 uploaded_files = st.file_uploader("Tải file PDF lên:", type="pdf", accept_multiple_files=True)
 
@@ -230,7 +272,6 @@ if uploaded_files and st.button("Xử lý tất cả file"):
                     is_recognized = False
                     customer_name = ""
 
-                    # --- NHẬN DIỆN ---
                     if "4PS CORPORATION" in page1_text or "CÔNG TY TNHH MTV KITCHEN 4PS" in page1_text:
                         customer_name = "4PS"
                         items = parse_4ps_po(pdf)
@@ -264,7 +305,6 @@ if uploaded_files and st.button("Xử lý tất cả file"):
                  df_standard['Price'] = pd.to_numeric(df_standard['Price'], errors='coerce').fillna(0)
         except: pass
         
-        # Sắp xếp cột (Đã thay Item_Name bằng Vendor No.)
         cols = ['Customer', 'Order_Number', 'Buyer_Name', 'Delivery_Date', 'Item_Code', 'Vendor No.', 'Quantity', 'Price', 'File_Name']
         final_cols = [c for c in cols if c in df_standard.columns]
         df_standard = df_standard[final_cols]
